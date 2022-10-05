@@ -20,14 +20,14 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
 from .backbone import build_backbone
 from .hoi_matcher import build_matcher as build_hoi_matcher
 from .transformer import build_transformer
-
+from .GC_block import build_GC_block
 
 num_humans = 2
 
 
 class HoiTR(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbone, transformer, num_classes, num_actions, num_queries, aux_loss=False):
+    def __init__(self, backbone, transformer, GC_block ,num_classes, num_actions, num_queries, aux_loss=False):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -45,6 +45,7 @@ class HoiTR(nn.Module):
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
         self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
         self.backbone = backbone
+        self.GC_block = GC_block
         self.aux_loss = aux_loss
 
         self.human_cls_embed = nn.Linear(hidden_dim, num_humans + 1)
@@ -73,6 +74,7 @@ class HoiTR(nn.Module):
         features, pos = self.backbone(samples)
 
         src, mask = features[-1].decompose()
+        src = self.GC_block(src)
         assert mask is not None
         hs = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])[0]
 
@@ -361,10 +363,17 @@ def build(args):
         backbone = build_backbone(args)
 
     transformer = build_transformer(args)
+    
+    if args.have_GC_block:
+        in_channels = backbone.num_channels
+        gc_block = build_GC_block(in_channels, args)
+    else:
+        gc_block = nn.Identity()
 
     model = HoiTR(
         backbone,
         transformer,
+        gc_block,
         num_classes=num_classes,
         num_actions=num_actions,
         num_queries=args.num_queries,

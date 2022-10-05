@@ -47,10 +47,25 @@ def get_args_parser():
     parser.add_argument('--clip_max_norm', default=0.1, type=float, help='gradient clipping max norm')
 
     # Backbone.
-    parser.add_argument('--backbone', choices=['resnet50', 'resnet101', 'swin'], required=True,
+    parser.add_argument('--backbone', choices=['resnet50', 'resnet101', 'swin', 'resnet50-hico'], required=True,
                         help="Name of the convolutional backbone to use")
-    parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned'),
+    parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned', 'sine-2d'),
                         help="Type of positional embedding to use on top of the image features")
+    parser.add_argument('--freeze_backbone', action='store_true',
+                        help="freeze the backbones")                   
+
+    # GC_Block
+    parser.add_argument('--have_GC_block', action='store_true')
+    parser.add_argument('--ratio', default=1, type=int,
+                        help="The ratio of GC block")
+    parser.add_argument('--headers', default=1, type=int,
+                        help="Number of heads in GC block")
+    parser.add_argument('--pooling_type', default='att', type=str,
+                        help="Pooling type of GC_block")
+    parser.add_argument('--atten_scale', default=False, type=bool,
+                        help="whether scaling the attention score")
+    parser.add_argument('--fusion_type', default='channel_add', type=str,
+                        help="the way of fusing attention scores on feature maps")
 
     # Transformer.
     parser.add_argument('--enc_layers', default=6, type=int,
@@ -134,6 +149,10 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
+    if args.freeze_backbone:
+        for p in model_without_ddp.backbone.parameters():
+            p.requires_grad = False
+    
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
@@ -162,28 +181,40 @@ def main(args):
     # Load from pretrained DETR model.
     assert args.num_queries == 100, args.num_queries
     assert args.enc_layers == 6 and args.dec_layers == 6
-    assert args.backbone in ['resnet50', 'resnet101', 'swin'], args.backbone
+    assert args.backbone in ['resnet50', 'resnet101', 'swin', 'resnet50-hico'], args.backbone
     if args.backbone == 'resnet50':
         pretrain_model = './data/detr_coco/detr-r50-e632da11.pth'
     elif args.backbone == 'resnet101':
         pretrain_model = './data/detr_coco/detr-r101-2c7b67e5.pth'
+    elif args.backbone == 'resnet50-hico':
+        pretrain_model = './data/detr_hicodet/res50_hico_1cf00bb.pth'
     else:
         pretrain_model = None
     if pretrain_model is not None:
         pretrain_dict = torch.load(pretrain_model, map_location='cpu')['model']
-        my_model_dict = model_without_ddp.state_dict()
-        pretrain_dict = {k: v for k, v in pretrain_dict.items() if k in my_model_dict}
-        my_model_dict.update(pretrain_dict)
-        model_without_ddp.load_state_dict(my_model_dict)
+        if args.backbone != 'resnet50-hico':
+            resume(model_without_ddp, pretrain_dict)
+        else:
+            resume(model_without_ddp, pretrain_dict, backbone_only=True)
+    
+        # my_model_dict = model_without_ddp.state_dict()
+        # pretrain_dict = {k: v for k, v in pretrain_dict.items() if k in my_model_dict}
+        # my_model_dict.update(pretrain_dict)
+        # model_without_ddp.load_state_dict(my_model_dict)
 
     output_dir = Path(args.output_dir)
     if args.resume:
         checkpoint = torch.load(args.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
+        # model_without_ddp.load_state_dict(checkpoint['model'])
+        resume(model_without_ddp, pretrain_dict)
         if 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             args.start_epoch = checkpoint['epoch'] + 1
+    
+    if args.freeze_backbone:
+        for p in model_without_ddp.backbone.parameters():
+            p.requires_grad = False
 
     print("Start training")
     start_time = time.time()
@@ -222,6 +253,18 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+def resume(model, checkpoint, backbone_only=False):
+
+    instances_model = set(map(lambda x: x.split('.', 1)[0], model.state_dict().keys()))
+    instances_weights = set(map(lambda x: x.split('.', 1)[0], checkpoint.keys()))
+    if not backbone_only:
+        instances_intersec = instances_model & instances_weights
+    else:
+        instances_intersec = set(['backbone'])
+        print('we load the backbone only')
+        for ins in instances_intersec:
+            new_dict = {k.split('.', 1)[1]: checkpoint[k] for k in checkpoint.keys() if k.startswith(ins)}
+            getattr(model, ins).load_state_dict(new_dict)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('HOI Transformer training script', parents=[get_args_parser()])
