@@ -86,7 +86,7 @@ mklink /D images /PATH/TO/images
 6.Train a model.
 ```
 # Train on HICO-DET.
-python3 -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --epochs=200 --lr_drop=110 --dataset_file=hico --batch_size=4 --backbone=resnet50-hico --have_GC_block
+python3 -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --epochs=200 --lr_drop=110 --dataset_file=hico --batch_size=4 --backbone=resnet50-hico --have_GC_block --freeze_backbone
 
 # Train on HOI-A.
 python3 -m torch.distributed.launch --nproc_per_node=8 --use_env main.py --epochs=150 --lr_drop=110 --dataset_file=hoia --batch_size=2 --backbone=resnet50
