@@ -290,6 +290,22 @@ def build_transformer(args):
         return_intermediate_dec=True,
     )
 
+class grouping_block(nn.Module):
+    
+    def __init__(self, queries_dim, emb_dim, world_embedding_path, device):
+        super().__init__()
+        
+        self.glove_world_embedding = torch.from_numpy(np.load(world_embedding_path)).to(device)
+        self.emb_dim = emb_dim
+        self.query_dim = queries_dim
+        self.to_q = nn.Linear(self.query_dim, emb_dim)
+        self.to_k = nn.Linear(self.glove_world_embedding.size(-1), emb_dim)
+        self.to_v = nn.Linear(self.glove_world_embedding.size(-1), emb_dim)
+    
+    def forward(self, queries):
+        return 0
+        
+
 
 def _get_activation_fn(activation):
     """Return an activation function given a string"""

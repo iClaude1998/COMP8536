@@ -35,10 +35,23 @@ def get_args_parser():
     parser.add_argument('--clip_max_norm', default=0.1, type=float, help='gradient clipping max norm')
 
     # Backbone.
-    parser.add_argument('--backbone', choices=['resnet50', 'resnet101'], required=True,
+    parser.add_argument('--backbone', choices=['resnet50', 'resnet101', 'resnet50-hico'], required=True,
                         help="Name of the convolutional backbone to use")
-    parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned'),
+    parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned', 'sine-2d'),
                         help="Type of positional embedding to use on top of the image features")
+    
+    # Global GC block
+    parser.add_argument('--have_GC_block', action='store_true')
+    parser.add_argument('--ratio', default=1, type=int,
+                        help="The ratio of GC block")
+    parser.add_argument('--headers', default=1, type=int,
+                        help="Number of heads in GC block")
+    parser.add_argument('--pooling_type', default='att', type=str,
+                        help="Pooling type of GC_block")
+    parser.add_argument('--atten_scale', default=False, type=bool,
+                        help="whether scaling the attention score")
+    parser.add_argument('--fusion_type', default='channel_add', type=str,
+                        help="the way of fusing attention scores on feature maps")
 
     # Transformer.
     parser.add_argument('--enc_layers', default=6, type=int,
