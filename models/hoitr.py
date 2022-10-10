@@ -364,7 +364,7 @@ def build(args):
     transformer = build_transformer(args)
     
     if args.have_GC_block:
-        in_channels = backbone.num_channels
+        in_channels = transformer.d_model
         gc_block = build_GC_block(in_channels, args)
     else:
         gc_block = nn.Identity()
