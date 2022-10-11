@@ -8,6 +8,7 @@ Copy-paste from torch.nn.Transformer with modifications:
     * decoder returns a stack of activations from all decoding layers
 """
 import copy
+import numpy as np
 from typing import Optional, List
 
 import torch
@@ -290,28 +291,9 @@ def build_transformer(args):
         return_intermediate_dec=True,
     )
 
-class grouping_block(nn.Module):
+
     
-    def __init__(self, queries_dim, emb_dim, world_embedding_path, glume=True, device='cuda', drop_out=.1):
-        super().__init__()
-        
-        self.glove_world_embedding = torch.from_numpy(np.load(world_embedding_path)).to(device)
-        self.emb_dim = emb_dim
-        self.query_dim = queries_dim
-        self.to_q = nn.Linear(self.query_dim, self.emb_dim)
-        self.to_k = nn.Linear(self.glove_world_embedding.size(-1), self.emb_dim)
-        self.to_v = nn.Linear(self.glove_world_embedding.size(-1), self.emb_dim)
-        self.to_out = nn.Linear(self.emb_dim, self.query_dim)
     
-    def forward(self, queries):
-        
-        q_proj = self.to_q(queries)
-        k_proj = self.to_k(self.glove_world_embedding)
-        v_proj = self.to_v(self.glove_world_embedding)
-        
-        
-    def atten(self, q, k, glumbel=True):
-        orign_score = torch.mul(q, k.T)
     
 
         

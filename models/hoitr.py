@@ -75,7 +75,7 @@ class HoiTR(nn.Module):
 
         src, mask = features[-1].decompose()
         assert mask is not None
-        hs = self.transformer(self.GC_block(self.input_proj(src)), mask, self.query_embed.weight, pos[-1])[0]
+        hs = self.transformer(self.GC_block(self.input_proj(src), mask), mask, self.query_embed.weight, pos[-1])[0]
 
         human_outputs_class = self.human_cls_embed(hs)
         human_outputs_coord = self.human_box_embed(hs).sigmoid()

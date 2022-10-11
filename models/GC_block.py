@@ -53,7 +53,7 @@ class MultiAspectGCAttention(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Conv2d(self.planes, self.inplanes, kernel_size=1))
 
-    def spatial_pool(self, x):
+    def spatial_pool(self, x, mask=None):
         batch, channel, height, width = x.size()
         if self.pooling_type == 'att':
             # [N*headers, C', H , W] C = headers * C'
@@ -70,11 +70,15 @@ class MultiAspectGCAttention(nn.Module):
             context_mask = self.conv_mask(x)
             # [N*headers, 1, H * W]
             context_mask = context_mask.view(batch * self.headers, 1, height * width)
+            
 
             # scale variance
             if self.att_scale and self.headers > 1:
                 context_mask = context_mask / torch.sqrt(self.single_header_inplanes)
-
+            
+            if mask is not None:
+                mask = mask.unsqueeze(1).repeat(1, self.headers, 1, 1).reshape(batch * self.headers, 1, -1)
+                context_mask = context_mask.masked_fill(mask == 0, -6.55e4)
             # [N*headers, 1, H * W]
             context_mask = self.softmax(context_mask)
 
@@ -91,9 +95,9 @@ class MultiAspectGCAttention(nn.Module):
 
         return context
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         # [N, C, 1, 1]
-        context = self.spatial_pool(x)
+        context = self.spatial_pool(x, mask)
 
         out = x
 
