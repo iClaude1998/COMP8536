@@ -97,7 +97,7 @@ python3 -m torch.distributed.launch --nproc_per_node=8 --use_env main.py --epoch
 # Training longer can get even better performance.
 
 # if above commands don't work, try this:
-python main.py --epochs=150 --lr_drop=110 --dataset_file=hico --batch_size=2 --world_size 1 --backbone=resnet50 --resume /PATH/TO/x.pth
+python main.py --epochs=150 --lr_drop=110 --dataset_file=hico --batch_size=2 --world_size 1 --backbone=resnet50-hico --freeze_backbone --resume
 ```
 
 7.Test a model.

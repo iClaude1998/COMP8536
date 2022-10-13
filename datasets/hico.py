@@ -190,6 +190,8 @@ coco_instance_ID_to_name = {
 hoi_interaction_names = json.loads(
     open('./data/hico/hico_verb_names.json', 'r').readlines()[0])['verb_names']
 
+words_representation_dict = json.load(open('./data/hico/word_embeddings.json', 'r'))
+
 
 def convert_xywh2x1y1x2y2(box, shape, flip):
     ih, iw = shape[:2]
@@ -251,6 +253,7 @@ def xyxy_to_cxcywh(box):
 def get_hoi_annotation_from_odgt(item, total_boxes, scale):
     human_boxes, object_boxes, action_boxes = [], [], []
     human_labels, object_labels, action_labels = [], [], []
+    interaction_representations = []
     img_hh, img_ww = item['height'], item['width']
     for hoi in item.get('hoi', []):
         x1, y1, x2, y2, cls_id = list(map(int, total_boxes[hoi['subject_id']]))
@@ -263,6 +266,7 @@ def get_hoi_annotation_from_odgt(item, total_boxes, scale):
             continue
         hoi_id = hoi_interaction_names.index(hoi['interaction'])
         hoi_box = get_interaction_box(human_box=human_box, object_box=object_box, hoi_id=hoi_id)
+        interaction_representation = words_representation_dict[hoi['interaction']]
 
         human_boxes.append(human_box[:4])
         object_boxes.append(object_box[:4])
@@ -270,6 +274,7 @@ def get_hoi_annotation_from_odgt(item, total_boxes, scale):
         human_labels.append(human_box[4])
         object_labels.append(object_box[4])
         action_labels.append(hoi_box[4])
+        interaction_representations.append(interaction_representation)
 
     return dict(
         human_boxes=torch.from_numpy(np.array(human_boxes).astype(np.float32)),
@@ -280,6 +285,7 @@ def get_hoi_annotation_from_odgt(item, total_boxes, scale):
         action_labels=torch.from_numpy(np.array(action_labels)).long(),
         image_id=item['file_name'],
         org_size=torch.as_tensor([int(img_hh), int(img_ww)]),
+        interaction_representations=torch.from_numpy(np.array(interaction_representations).astype(np.float32))
     )
 
 
@@ -415,7 +421,7 @@ def crop(image, org_target, region, image_set='train'):
         return cropped_image, target
 
     i, j, h, w = region
-    fields = ["human_labels", "object_labels", "action_labels"]
+    fields = ["human_labels", "object_labels", "action_labels", "interaction_representations"]
 
     if "human_boxes" in target:
         boxes = target["human_boxes"]
@@ -560,9 +566,21 @@ class HoiDetection(VisionDataset):
         if self.image_set in ['train']:
             self.annotations = [a for a in annotations if len(a['annotations']['action_labels']) > 0]
         else:
-            self.annotations = annotations
+            self.annotations = annotations           
         self.transforms = transforms
+        
+        # res = {}
+        # for a in self.annotations:
+        #     act_labels = a['annotations']['action_labels']
+        #     if len(act_labels) > 0:
+        #         res[a['image_id']] = (a['annotations']['action_labels'] - 1).tolist()
+        # json_str = json.dumps(res)
+        # with open('./data/hico/actions_test.json', 'w') as jf:
+        #     jf.write(json_str)
+        # raise NotImplementedError
+                
 
+        
     def __getitem__(self, index):
         ann = self.annotations[index]
         img_name = ann['image_id']

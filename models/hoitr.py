@@ -11,6 +11,7 @@ DETR model and criterion classes.
 import torch
 import torch.nn.functional as F
 from torch import nn
+import numpy as np
 
 from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
@@ -21,13 +22,14 @@ from .backbone import build_backbone
 from .hoi_matcher import build_matcher as build_hoi_matcher
 from .transformer import build_transformer
 from .GC_block import build_GC_block
+from .modal_fusion_block import build_fusion_block
 
 num_humans = 2
 
 
 class HoiTR(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbone, transformer, GC_block ,num_classes, num_actions, num_queries, aux_loss=False):
+    def __init__(self, backbone, transformer, GC_block ,word_fusion_block, num_classes, num_actions, num_queries, aux_loss=False):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -43,6 +45,7 @@ class HoiTR(nn.Module):
         hidden_dim = transformer.d_model
 
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.word_fusion_block = word_fusion_block
         self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.GC_block = GC_block
@@ -53,6 +56,9 @@ class HoiTR(nn.Module):
         self.object_cls_embed = nn.Linear(hidden_dim, num_classes + 1)
         self.object_box_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.action_cls_embed = nn.Linear(hidden_dim, num_actions + 1)
+        if self.word_fusion_block is not None: # hidden_dim, self.word_fusion_block.glove_word_dim
+            self.action_word_embed = Fusion_head(hidden_dim, self.word_fusion_block.emb_dim, self.word_fusion_block.word_dim)
+        
 
     def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
@@ -75,7 +81,15 @@ class HoiTR(nn.Module):
 
         src, mask = features[-1].decompose()
         assert mask is not None
-        hs = self.transformer(self.GC_block(self.input_proj(src), mask), mask, self.query_embed.weight, pos[-1])[0]
+        if self.word_fusion_block is not None:
+            queries = self.word_fusion_block(self.query_embed.weight)
+        else:
+            queries = self.query_embed.weight
+        src = self.input_proj(src)
+        if self.GC_block is not None:
+            src = self.GC_block(src, mask)
+        hs = self.transformer(src, mask, queries, pos[-1])[0]
+
 
         human_outputs_class = self.human_cls_embed(hs)
         human_outputs_coord = self.human_box_embed(hs).sigmoid()
@@ -90,7 +104,13 @@ class HoiTR(nn.Module):
             'object_pred_boxes': object_outputs_coord[-1],
             'action_pred_logits': action_outputs_class[-1],
         }
-
+        
+        if self.word_fusion_block is not None:
+            action_represent = self.action_word_embed(hs)
+            out['action_pred_embedding'] = action_represent[-1]
+        else:
+            action_represent = None
+            
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(
                 human_outputs_class,
@@ -98,7 +118,9 @@ class HoiTR(nn.Module):
                 object_outputs_class,
                 object_outputs_coord,
                 action_outputs_class,
+                action_represent,
             )
+
         return out
 
     @torch.jit.unused
@@ -108,29 +130,54 @@ class HoiTR(nn.Module):
                       object_outputs_class,
                       object_outputs_coord,
                       action_outputs_class,
+                      action_outputs_pre
                       ):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{
-            'human_pred_logits': a,
-            'human_pred_boxes': b,
-            'object_pred_logits': c,
-            'object_pred_boxes': d,
-            'action_pred_logits': e,
-        } for
-            a,
-            b,
-            c,
-            d,
-            e,
-            in zip(
-            human_outputs_class[:-1],
-            human_outputs_coord[:-1],
-            object_outputs_class[:-1],
-            object_outputs_coord[:-1],
-            action_outputs_class[:-1],
-        )]
+        if action_outputs_pre is None:
+            return [{
+                'human_pred_logits': a,
+                'human_pred_boxes': b,
+                'object_pred_logits': c,
+                'object_pred_boxes': d,
+                'action_pred_logits': e,
+            } for
+                a,
+                b,
+                c,
+                d,
+                e,
+                in zip(
+                human_outputs_class[:-1],
+                human_outputs_coord[:-1],
+                object_outputs_class[:-1],
+                object_outputs_coord[:-1],
+                action_outputs_class[:-1],
+            )]
+        else:
+            return [{
+                'human_pred_logits': a,
+                'human_pred_boxes': b,
+                'object_pred_logits': c,
+                'object_pred_boxes': d,
+                'action_pred_logits': e,
+                'action_pred_embedding': f
+            } for
+                a,
+                b,
+                c,
+                d,
+                e,
+                f
+                in zip(
+                human_outputs_class[:-1],
+                human_outputs_coord[:-1],
+                object_outputs_class[:-1],
+                object_outputs_coord[:-1],
+                action_outputs_class[:-1],
+                action_outputs_pre[:-1]
+            )]
 
 
 class SetCriterion(nn.Module):
@@ -139,7 +186,8 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, num_actions, matcher, weight_dict, eos_coef, losses):
+    def __init__(self, num_classes, num_actions, matcher, weight_dict, eos_coef, 
+                 losses, language_temperature=0.5, device='cuda', word_embedding_path=None):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -155,6 +203,16 @@ class SetCriterion(nn.Module):
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
         self.losses = losses
+        if 'language' in self.losses:
+            self.language_temperature = torch.nn.Parameter(torch.tensor(language_temperature, device=device), requires_grad=True)
+        else:
+            self.language_temperature = None
+        
+        if word_embedding_path is not None:
+            glove_word_embedding = torch.from_numpy(np.load(word_embedding_path)).to(device)
+            self.register_buffer('glove_word_embedding', glove_word_embedding)
+            self.num_words = self.glove_word_embedding.size(0)
+
 
         human_empty_weight = torch.ones(num_humans + 1)
         human_empty_weight[-1] = self.eos_coef
@@ -181,9 +239,13 @@ class SetCriterion(nn.Module):
 
         idx = self._get_src_permutation_idx(indices)
 
+
+
         human_target_classes_o = torch.cat([t["human_labels"][J] for t, (_, J) in zip(targets, indices)])
         object_target_classes_o = torch.cat([t["object_labels"][J] for t, (_, J) in zip(targets, indices)])
         action_target_classes_o = torch.cat([t["action_labels"][J] for t, (_, J) in zip(targets, indices)])
+
+
 
         human_target_classes = torch.full(human_src_logits.shape[:2], num_humans,
                                           dtype=torch.int64, device=human_src_logits.device)
@@ -252,6 +314,7 @@ class SetCriterion(nn.Module):
         losses['object_loss_bbox'] = object_loss_bbox.sum() / num_boxes
         losses['loss_bbox'] = losses['human_loss_bbox'] + losses['object_loss_bbox']
 
+
         human_loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
             box_ops.box_cxcywh_to_xyxy(human_src_boxes),
             box_ops.box_cxcywh_to_xyxy(human_target_boxes)))
@@ -263,6 +326,53 @@ class SetCriterion(nn.Module):
 
         losses['loss_giou'] = losses['human_loss_giou'] + losses['object_loss_giou']
         return losses
+    
+    def loss_language(self, outputs, targets, indices, num_boxes):
+        idx = self._get_src_permutation_idx(indices)
+        pred_embedding = outputs['action_pred_embedding']
+        matched_embedding = pred_embedding[idx]
+        action_embedding_o = torch.cat([t["interaction_representations"][J] for t, (_, J) in zip(targets, indices)])
+        action_target_classes_o = torch.cat([t["action_labels"][J] for t, (_, J) in zip(targets, indices)]) - 1
+        
+        loss_queries2words = self.loss_language_queires2words(pred_embedding, action_embedding_o, indices)
+        loss_words2instance = self.loss_language_words2instance(matched_embedding, action_target_classes_o)
+        loss_one2one = self.loss_one2one_match(matched_embedding, action_embedding_o)
+        loss_language = loss_queries2words + loss_words2instance + loss_one2one
+        return {'loss_queries2words': loss_queries2words, 
+                'loss_words2instance': loss_words2instance, 
+                'loss_language': loss_language,
+                'loss_one2one': loss_one2one}
+    
+    def loss_language_queires2words(self, pred_embedding, action_embedding_o, indices):
+        b, num_queries, _ = pred_embedding.size()
+        pred_embedding = pred_embedding.view(b*num_queries, 1, -1)
+        queries_idcs = torch.cat([idx[0] + (i * num_queries) for i, idx in enumerate(indices)])
+        similarity_scores = F.cosine_similarity(pred_embedding, action_embedding_o.unsqueeze(0), dim=-1)
+
+        positives = torch.exp(similarity_scores[(queries_idcs, torch.arange(action_embedding_o.size(0)))] / self.language_temperature)
+        negatives = torch.exp(similarity_scores / self.language_temperature)
+
+        return torch.sum(-torch.log(positives / negatives.sum(dim=0))) / (num_queries * b)
+        # return torch.mean(-torch.log(positives / negatives.sum(dim=0)))
+    
+    def loss_language_words2instance(self, matched_embedding, action_target_classes_o):
+        matched_embedding = matched_embedding.unsqueeze(1)
+        num_matched = matched_embedding.size(0)
+        
+        similarity_scores = F.cosine_similarity(matched_embedding, self.glove_word_embedding.unsqueeze(0), dim=-1)
+        positives = torch.exp(similarity_scores[(torch.arange(num_matched), action_target_classes_o)] / self.language_temperature)
+        negatives = torch.exp(similarity_scores / self.language_temperature)
+        # return torch.sum(-torch.log(positives / negatives.sum(dim=1))) / self.num_words
+        return torch.mean(-torch.log(positives / negatives.sum(dim=1)))
+    
+    def loss_one2one_match(self, matched_embedding, action_embedding_o):
+        similarity_scores = F.cosine_similarity(matched_embedding.unsqueeze(1), action_embedding_o.unsqueeze(0), dim=-1)
+        positives = torch.exp(torch.diag(similarity_scores) / self.language_temperature)
+        negatives = torch.exp(similarity_scores / self.language_temperature)
+        
+        return torch.mean(-torch.log(positives / negatives.sum(dim=1))) + torch.mean(-torch.log(positives / negatives.sum(dim=0)))
+        
+        
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
@@ -281,7 +391,9 @@ class SetCriterion(nn.Module):
             'labels': self.loss_labels,
             'cardinality': self.loss_cardinality,
             'boxes': self.loss_boxes,
+            'language': self.loss_language
         }
+
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
@@ -339,6 +451,17 @@ class MLP(nn.Module):
         for i, layer in enumerate(self.layers):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
+    
+class Fusion_head(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.layer = nn.Sequential(nn.Linear(input_dim, hidden_dim), 
+                                   nn.ReLU(True),
+                                   nn.LayerNorm(hidden_dim),
+                                   nn.Linear(hidden_dim, output_dim))
+    def forward(self, x):
+        return self.layer(x)
+        
 
 
 def build(args):
@@ -367,22 +490,30 @@ def build(args):
         in_channels = transformer.d_model
         gc_block = build_GC_block(in_channels, args)
     else:
-        gc_block = nn.Identity()
+        gc_block = None
+    if args.have_fusion_block:
+        word_fusion_block = build_fusion_block(args)
+    else:
+        word_fusion_block=None
 
     model = HoiTR(
         backbone,
         transformer,
         gc_block,
+        word_fusion_block,
         num_classes=num_classes,
         num_actions=num_actions,
         num_queries=args.num_queries,
-        aux_loss=args.aux_loss,
+        aux_loss=args.aux_loss
     )
 
     matcher = build_hoi_matcher(args)
 
     weight_dict = dict(loss_ce=1, loss_bbox=args.bbox_loss_coef, loss_giou=args.giou_loss_coef)
+    if word_fusion_block is not None:
+        weight_dict['loss_language'] = args.loss_language_coef
 
+    
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}
@@ -391,9 +522,12 @@ def build(args):
         weight_dict.update(aux_weight_dict)
 
     losses = ['labels', 'boxes', 'cardinality']
+    if word_fusion_block is not None:
+        losses.append('language')
 
     criterion = SetCriterion(num_classes=num_classes, num_actions=num_actions, matcher=matcher,
-                             weight_dict=weight_dict, eos_coef=args.eos_coef, losses=losses)
+                             weight_dict=weight_dict, eos_coef=args.eos_coef, losses=losses, 
+                             language_temperature=args.lang_T, device=device, word_embedding_path=args.word_representation_path)
     criterion.to(device)
 
     return model, criterion

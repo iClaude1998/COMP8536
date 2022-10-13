@@ -1,3 +1,11 @@
+'''
+Author: Yunxiang Liu u7191378@anu.edu.au
+Date: 2022-09-12 21:28:35
+LastEditors: Yunxiang Liu u7191378@anu.edu.au
+LastEditTime: 2022-10-12 02:01:19
+FilePath: \HoiTransformer\engine.py
+Description: Engine
+'''
 # ------------------------------------------------------------------------
 # Licensed under the Apache License, Version 2.0 (the "License")
 # ------------------------------------------------------------------------

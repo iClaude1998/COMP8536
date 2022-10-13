@@ -52,6 +52,20 @@ def get_args_parser():
                         help="whether scaling the attention score")
     parser.add_argument('--fusion_type', default='channel_add', type=str,
                         help="the way of fusing attention scores on feature maps")
+    
+    # Modal Fusion Blocks
+    parser.add_argument('--have_fusion_block', action='store_true')
+    parser.add_argument('--word_representation_path', default='./HOI_verb_GloveEmbbeding/HOI_Verb_wordVectors.npy')
+    parser.add_argument('--fuse_dim', default=512, type=int,
+                        help="The fused dimension for attentional fusion")
+    parser.add_argument('--gumbel', default=False, type=bool,
+                        help="Whether implement gumbel attention")
+    parser.add_argument('--tau', default=1, type=float,
+                        help="the tau of gumbel attention, activate when --gumbel is true")
+    parser.add_argument('--fusion_heads', default=8, type=int,
+                        help="The number of heads for model fusion")
+    parser.add_argument('--fusion_drop_out', default=0.1, type=float,
+                        help="the drop out score for attention fusion")
 
     # Transformer.
     parser.add_argument('--enc_layers', default=6, type=int,
@@ -80,13 +94,18 @@ def get_args_parser():
                         help="L1 box coefficient in the matching cost")
     parser.add_argument('--set_cost_giou', default=2, type=float,
                         help="giou box coefficient in the matching cost")
+    parser.add_argument('--set_cost_word', default=0.6, type=float,
+                        help="representation similarity coefficient in the matching cost, activate auto when implement word fusion block")
 
     # Loss coefficients.
     parser.add_argument('--dice_loss_coef', default=1, type=float)
     parser.add_argument('--bbox_loss_coef', default=5, type=float)
     parser.add_argument('--giou_loss_coef', default=2, type=float)
+    parser.add_argument('--loss_language_coef', default=1, type=float)
     parser.add_argument('--eos_coef', default=0.02, type=float,
                         help="Relative classification weight of the no-object class")
+    parser.add_argument('--lang_T', default=.5, type=float,
+                        help="The temperature of contrast loss for language fusion loss, activate auto when implement word fusion block")
 
     # Dataset parameters.
     parser.add_argument('--dataset_file', choices=['hico', 'vcoco', 'hoia'], required=True)

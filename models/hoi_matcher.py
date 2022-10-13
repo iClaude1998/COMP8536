@@ -11,6 +11,7 @@ Modules to compute the matching cost and solve the corresponding LSAP.
 import torch
 from scipy.optimize import linear_sum_assignment
 from torch import nn
+from torch.nn import functional as F
 
 from util.box_ops import box_cxcywh_to_xyxy, generalized_box_iou
 
@@ -23,7 +24,7 @@ class HungarianMatcher(nn.Module):
     while the others are un-matched (and thus treated as non-objects).
     """
 
-    def __init__(self, cost_class: float = 1, cost_bbox: float = 1, cost_giou: float = 1):
+    def __init__(self, cost_class: float = 1, cost_bbox: float = 1, cost_giou: float = 1, cost_word: float = 0.6):
         """Creates the matcher
 
         Params:
@@ -35,6 +36,7 @@ class HungarianMatcher(nn.Module):
         self.cost_class = cost_class
         self.cost_bbox = cost_bbox
         self.cost_giou = cost_giou
+        self.cost_word = cost_word
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
 
     @torch.no_grad()
@@ -66,6 +68,11 @@ class HungarianMatcher(nn.Module):
         object_out_prob = outputs["object_pred_logits"].flatten(0, 1).softmax(-1)  # [bs * num_queries, num_classes]
         object_out_bbox = outputs["object_pred_boxes"].flatten(0, 1)  # [bs * num_queries, 4]
         action_out_prob = outputs["action_pred_logits"].flatten(0, 1).softmax(-1)  # [bs * num_queries, num_classes]
+        action_out_action_emb = outputs.get('action_pred_embedding', None)
+        if action_out_action_emb is not None:
+            action_out_action_emb = action_out_action_emb.flatten(0, 1)
+
+
 
         # Also concat the target labels and boxes
         human_tgt_ids = torch.cat([v["human_labels"] for v in targets])
@@ -73,6 +80,8 @@ class HungarianMatcher(nn.Module):
         object_tgt_ids = torch.cat([v["object_labels"] for v in targets])
         object_tgt_box = torch.cat([v["object_boxes"] for v in targets])
         action_tgt_ids = torch.cat([v["action_labels"] for v in targets])
+        action_tgt_present = torch.cat([v["interaction_representations"] for v in targets])
+
 
         # Compute the classification cost. Contrary to the loss, we don't use the NLL,
         # but approximate it in 1 - proba[target class].
@@ -88,6 +97,14 @@ class HungarianMatcher(nn.Module):
         # Compute the giou cost betwen boxes
         human_cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(human_out_bbox), box_cxcywh_to_xyxy(human_tgt_box))
         object_cost_giou = -generalized_box_iou(box_cxcywh_to_xyxy(object_out_bbox), box_cxcywh_to_xyxy(object_tgt_box))
+        
+        # Compute the similarity scores between pred embedding and target embeddings
+        if action_out_action_emb is not None:
+            similarity_scores = 1 - F.cosine_similarity(action_out_action_emb.unsqueeze(1), action_tgt_present.unsqueeze(0), dim=-1)
+        else:
+            similarity_scores = None
+            
+
 
         beta_1, beta_2 = 1.2, 1
         alpha_h, alpha_o, alpha_r = 1, 1, 2
@@ -99,15 +116,15 @@ class HungarianMatcher(nn.Module):
         l_cls_all = (l_cls_h + l_cls_o + l_cls_r) / (alpha_h + alpha_o + alpha_r)
         l_box_all = (l_box_h + l_box_o) / 2
         C = beta_1 * l_cls_all + beta_2 * l_box_all
-
+        if similarity_scores is not None:
+            C += self.cost_word  * similarity_scores
         C = C.view(bs, num_queries, -1).cpu()
-
+        
         sizes = [len(v["human_boxes"]) for v in targets]
         indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
-
         result = [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
         return result
 
 
 def build_matcher(args):
-    return HungarianMatcher(cost_class=args.set_cost_class, cost_bbox=args.set_cost_bbox, cost_giou=args.set_cost_giou)
+    return HungarianMatcher(cost_class=args.set_cost_class, cost_bbox=args.set_cost_bbox, cost_giou=args.set_cost_giou, cost_word=args.set_cost_word)

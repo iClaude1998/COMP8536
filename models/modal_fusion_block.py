@@ -2,7 +2,7 @@
 Author: Yunxiang Liu u7191378@anu.edu.au
 Date: 2022-10-10 22:29:55
 LastEditors: Yunxiang Liu u7191378@anu.edu.au
-LastEditTime: 2022-10-11 01:04:20
+LastEditTime: 2022-10-13 00:44:21
 FilePath: \HoiTransformer\models\modal_fusion_block
 Description: Grouping_block
 '''
@@ -11,13 +11,17 @@ import numpy as np
 from torch import nn 
 
 
-class word_fusion_block(nn.Module):
+class Word_fusion_block(nn.Module):
     
     def __init__(self, queries_dim, emb_dim, world_embedding_path, gumbel=True, tau=1., num_heads=8, device='cuda', drop_out=.1):
         super().__init__()
-        self.glove_world_embedding = torch.from_numpy(np.load(world_embedding_path)).to(device)
-        self.atten(queries_dim, emb_dim, self.glove_world_embedding, gumbel, tau, num_heads, drop_out)
-        self.connection = SubLayerConnection(emb_dim)
+        self.emb_dim = emb_dim
+        glove_word_embedding = torch.from_numpy(np.load(world_embedding_path)).to(device)
+        self.register_buffer('glove_word_embedding', glove_word_embedding)
+        self.word_dim = self.glove_word_embedding.size(1)
+        self.atten = word_attention(queries_dim, self.emb_dim, self.glove_word_embedding, gumbel, tau, num_heads, drop_out)
+        self.connection = SubLayerConnection(queries_dim)
+        self.glove_word_dim = self.glove_word_embedding.size(1)
         
     def forward(self, queries):
         return self.connection(queries, lambda queries: self.atten(queries))
@@ -31,7 +35,7 @@ class word_attention(nn.Module):
         assert emb_dim % num_heads == 0, 'The embedded dimension should be divisible by number of heads'
         self.emb_dim = emb_dim
         self.glove_word_embedding = word_embedding
-        self.num_words, self.word_dim = self.glove_world_embedding.size()
+        self.num_words, self.word_dim = self.glove_word_embedding.size()
         self.num_heads = num_heads
         self.dim_head = emb_dim // self.num_heads
         self.scale = self.dim_head ** -0.5
@@ -58,7 +62,7 @@ class word_attention(nn.Module):
             attn = gumbel_softmax(dots, hard=True)
         else:
             attn = dots.softmax(-1)
-        out = torch.matmul(attn, v).tranpose(0, 1).reshape(num_queries, self.emb_dim)
+        out = torch.matmul(attn, v).transpose(0, 1).reshape(num_queries, self.emb_dim)
         return self.to_out(out)
             
         
@@ -96,3 +100,13 @@ def gumbel_softmax(logits: torch.Tensor, tau: float = 1, hard: bool = False) -> 
         # Reparametrization trick.
         ret = y_soft
     return ret
+
+def build_fusion_block(args):
+    return Word_fusion_block(queries_dim=args.hidden_dim, 
+                             emb_dim=args.fuse_dim, 
+                             world_embedding_path=args.word_representation_path, 
+                             gumbel=args.gumbel, 
+                             tau=args.tau, 
+                             num_heads=args.fusion_heads, 
+                             device=args.device, 
+                             drop_out=args.fusion_drop_out)
