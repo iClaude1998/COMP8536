@@ -2,7 +2,7 @@
 Author: Yunxiang Liu u7191378@anu.edu.au
 Date: 2022-10-15 16:18:37
 LastEditors: Yunxiang Liu u7191378@anu.edu.au
-LastEditTime: 2022-10-16 22:36:53
+LastEditTime: 2022-10-17 00:36:38
 FilePath: \HoiTransformer\models\grouping_encoder.py
 Description: 
 '''
@@ -21,12 +21,13 @@ class Region_Proposal_Encoder(nn.Module):
         super().__init__()
         self.layers = nn.ModuleList(list(map(lambda q: group_encoder(q, dim, heads, dim_head, mlp_dim, e_attn_dropout, e_dropout,
                  grouping_heads, d_grouping_head, mlp_ratio), num_queries)))
+        self.out_encoder = Transformer_Encoder(dim, heads, dim_head, mlp_dim, e_attn_dropout, e_dropout)
         
     def forward(self, x, mask):
         out = self.layers[0](x, mask)
         for layer in self.layers[1:]:
             out = layer(out)
-        return out
+        return self.out_encoder(out, None)
             
     
 class group_encoder(nn.Module):
