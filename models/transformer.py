@@ -52,14 +52,76 @@ class Transformer(nn.Module):
         pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
         query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
         mask = mask.flatten(1)
-
         tgt = torch.zeros_like(query_embed)
 
         memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        
         hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
                           pos=pos_embed, query_pos=query_embed)
         return hs.transpose(1, 2), memory.permute(1, 2, 0).view(bs, c, h, w)
+    
 
+class T_encoders(nn.Module):
+    
+    def __init__(self, d_model=512, nhead=8, num_encoder_layers=6, dim_feedforward=2048, dropout=0.1,
+                 activation="relu", normalize_before=False):
+        super().__init__()
+
+        encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
+                                                dropout, activation, normalize_before)
+        encoder_norm = nn.LayerNorm(d_model) if normalize_before else None
+        self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers, encoder_norm)
+        self._reset_parameters()
+        
+        self.d_model = d_model
+        self.nhead = nhead
+    
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+    
+    def forward(self, src, mask, pos_embed):
+        # flatten NxCxHxW to HWxNxC
+        src = src.flatten(2).permute(2, 0, 1)
+        # pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
+        # mask = mask.flatten(1)
+
+        return self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+    
+    
+class T_decoders(nn.Module):
+    
+    def __init__(self, d_model=512, nhead=8, num_decoder_layers=6,
+                 dim_feedforward=2048, dropout=0.1,
+                 activation="relu", normalize_before=False,
+                 return_intermediate_dec=False):
+        super().__init__()
+        decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward,
+                                                dropout, activation, normalize_before)
+        decoder_norm = nn.LayerNorm(d_model)
+        self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
+                                          return_intermediate=return_intermediate_dec)
+
+        self._reset_parameters()
+
+        self.d_model = d_model
+        self.nhead = nhead
+
+    def _reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+                
+    def forward(self, memory, query_embed, mask, pos_embed):
+        bs = memory.size(1)
+        # pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
+        # query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
+        # mask = mask.flatten(1)
+        tgt = torch.zeros_like(query_embed)
+        return self.decoder(tgt, memory, memory_key_padding_mask=mask,
+                          pos=pos_embed, query_pos=query_embed).transpose(1, 2)
+    
 
 class TransformerEncoder(nn.Module):
 
@@ -290,6 +352,23 @@ def build_transformer(args):
         normalize_before=args.pre_norm,
         return_intermediate_dec=True,
     )
+    
+def build_Transformer_encoders(args):
+    return T_encoders(d_model=args.hidden_dim, 
+                      nhead=args.nheads, 
+                      num_encoder_layers=args.enc_layers, 
+                      dim_feedforward=args.dim_feedforward, 
+                      dropout=args.dropout, 
+                      normalize_before=args.pre_norm)
+    
+def build_Transformer_decoders(args):
+    return T_decoders(d_model=args.hidden_dim, 
+                      nhead=args.nheads, 
+                      num_decoder_layers=args.dec_layers, 
+                      dim_feedforward=args.dim_feedforward, 
+                      dropout=args.dropout,
+                      normalize_before=args.pre_norm, 
+                      return_intermediate_dec=True)
 
 
     

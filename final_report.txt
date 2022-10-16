@@ -2,3 +2,5 @@
 ./checkpoint/p_202209131803/checkpoint.pth 
 ./checkpoint/p_202209131803/checkpoint.pth 
 ./checkpoint/p_202209131803/checkpoint.pth 
+exps/with_GC_block/checkpoint0129.pth 
+./log\result_s672_e129_hico_resnet50-hico.json 

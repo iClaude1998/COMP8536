@@ -4,3 +4,5 @@ Secretkey：YqVqFC9nZNf4mlYpg0lfz4lry5tVgHHI
 Signkey：IXzi#~jnPgLq~2D8#8X2k4EV^nmqGSFO
 
 登录密码和数据密码：8536advcv
+
+personal_token: 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

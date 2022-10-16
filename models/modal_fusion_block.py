@@ -2,7 +2,7 @@
 Author: Yunxiang Liu u7191378@anu.edu.au
 Date: 2022-10-10 22:29:55
 LastEditors: Yunxiang Liu u7191378@anu.edu.au
-LastEditTime: 2022-10-13 00:44:21
+LastEditTime: 2022-10-16 20:17:30
 FilePath: \HoiTransformer\models\modal_fusion_block
 Description: Grouping_block
 '''
@@ -48,21 +48,23 @@ class word_attention(nn.Module):
         self.tau = tau
     
     def forward(self, queries):
-        num_queries, _ = queries.size()
+        b, num_queries, _ = queries.size()
+        glove_word_embedding =  self.glove_word_embedding.expand(b, -1, -1)
         q = self.to_q(queries)
-        k = self.to_k(self.glove_word_embedding)
-        v = self.to_v(self.glove_word_embedding)
+        k = self.to_k(glove_word_embedding)
+        v = self.to_v(glove_word_embedding)
         
-        q = q.reshape(num_queries, self.num_heads, self.dim_head).transpose(0, 1)
-        k = k.reshape(self.num_words, self.num_heads, self.dim_head).transpose(0, 1)
-        v = v.reshape(self.num_words, self.num_heads, self.dim_head).transpose(0, 1)
+        q = q.reshape(b, num_queries, self.num_heads, self.dim_head).transpose(1, 2).reshape(b*self.num_heads, num_queries, self.dim_head)
+        k = k.reshape(b, self.num_words, self.num_heads, self.dim_head).transpose(1, 2).reshape(b*self.num_heads, self.num_words, self.dim_head)
+        v = v.reshape(b, self.num_words, self.num_heads, self.dim_head).transpose(1, 2)
         
         dots = torch.matmul(q, k.transpose(1, 2)) * self.scale
+        dots = dots.reshape(b, self.num_heads, num_queries, self.num_words)
         if self.gumbel:
             attn = gumbel_softmax(dots, hard=True)
         else:
             attn = dots.softmax(-1)
-        out = torch.matmul(attn, v).transpose(0, 1).reshape(num_queries, self.emb_dim)
+        out = torch.matmul(attn, v).transpose(1, 2).reshape(b, num_queries, -1)
         return self.to_out(out)
             
         

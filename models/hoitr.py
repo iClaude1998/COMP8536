@@ -20,16 +20,17 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
 
 from .backbone import build_backbone
 from .hoi_matcher import build_matcher as build_hoi_matcher
-from .transformer import build_transformer
+from .transformer import build_transformer, build_Transformer_encoders, build_Transformer_decoders
 from .GC_block import build_GC_block
 from .modal_fusion_block import build_fusion_block
+from .grouping_encoder import build_RPE
 
 num_humans = 2
 
 
 class HoiTR(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbone, transformer, GC_block ,word_fusion_block, num_classes, num_actions, num_queries, aux_loss=False):
+    def __init__(self, backbone, T_encoders, T_decoders, GC_block ,word_fusion_block, RPE, num_classes, num_actions, num_queries, aux_loss=False):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -41,14 +42,17 @@ class HoiTR(nn.Module):
         """
         super().__init__()
         self.num_queries = num_queries
-        self.transformer = transformer
-        hidden_dim = transformer.d_model
+        self.T_encoders = T_encoders
+        self.T_decoders = T_decoders
+        # self.transformer = transformer
+        hidden_dim = T_decoders.d_model
 
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
         self.word_fusion_block = word_fusion_block
         self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.GC_block = GC_block
+        self.RPE = RPE
         self.aux_loss = aux_loss
 
         self.human_cls_embed = nn.Linear(hidden_dim, num_humans + 1)
@@ -81,15 +85,30 @@ class HoiTR(nn.Module):
 
         src, mask = features[-1].decompose()
         assert mask is not None
-        if self.word_fusion_block is not None:
-            queries = self.word_fusion_block(self.query_embed.weight)
-        else:
-            queries = self.query_embed.weight
+
         src = self.input_proj(src)
+        bs = src.size(0)
         if self.GC_block is not None:
             src = self.GC_block(src, mask)
-        hs = self.transformer(src, mask, queries, pos[-1])[0]
+        
+        pos_embed = pos[-1].flatten(2).permute(2, 0, 1)
+        mask = mask.flatten(1)
+        memory = self.T_encoders(src, mask, pos_embed)
 
+        if self.RPE is not None:
+            queries = self.RPE(memory.transpose(0, 1), mask)
+            # queries = queries.transpose(0, 1)
+        else:
+            queries = self.query_embed.weight
+            queries = queries.unsqueeze(0).repeat(bs, 1, 1)
+            
+        if self.word_fusion_block is not None:
+            queries = self.word_fusion_block(queries)
+        hs = self.T_decoders(memory, queries.transpose(0, 1), mask, pos_embed)
+        # print(hs.size())
+        # raise NotImplementedError
+
+        # hs = self.transformer(src, mask, queries, pos[-1])[0]
 
         human_outputs_class = self.human_cls_embed(hs)
         human_outputs_coord = self.human_box_embed(hs).sigmoid()
@@ -484,23 +503,32 @@ def build(args):
     else:
         backbone = build_backbone(args)
 
-    transformer = build_transformer(args)
+    # transformer = build_transformer(args)
+    transformer_encoders = build_Transformer_encoders(args)
+    transformer_decoders = build_Transformer_decoders(args)
     
     if args.have_GC_block:
-        in_channels = transformer.d_model
+        in_channels = transformer_encoders.d_model
         gc_block = build_GC_block(in_channels, args)
     else:
         gc_block = None
+        
     if args.have_fusion_block:
         word_fusion_block = build_fusion_block(args)
     else:
         word_fusion_block=None
-
+        
+    if args.have_RPE:
+        RPE = build_RPE(args)
+    else:
+        RPE = None
     model = HoiTR(
         backbone,
-        transformer,
+        transformer_encoders,
+        transformer_decoders,
         gc_block,
         word_fusion_block,
+        RPE,
         num_classes=num_classes,
         num_actions=num_actions,
         num_queries=args.num_queries,

@@ -66,6 +66,27 @@ def get_args_parser():
                         help="The number of heads for model fusion")
     parser.add_argument('--fusion_drop_out', default=0.1, type=float,
                         help="the drop out score for attention fusion")
+    
+    # RPE
+    parser.add_argument('--have_RPE', action='store_true')
+    parser.add_argument('--n_queries', type=list, default=[256, 100], 
+                        help="The number of queries for each RPE layer")
+    parser.add_argument('--mlp_ratio', type=list, default=[0.5, 4.],
+                        help="The hidden dimension ratio on two feedforward layers in grouping blocks")
+    parser.add_argument('--e_num_heads', default=6, type=int,
+                        help="The number of heads in transformer encoder")
+    parser.add_argument('--e_dim_head', default=48, type=int,
+                        help="The dimension for each head in transformer encoder")
+    parser.add_argument('--e_mlp_dim', default=2048, type=int,
+                        help="The hidden dimension in transformer encoder")
+    parser.add_argument('--e_attn_dropout', default=0., type=float,
+                        help="the drop out score for transformer encoder")
+    parser.add_argument('--e_dropout', default=0., type=float,
+                        help="the drop out score for transformer encoder")
+    parser.add_argument('--grouping_heads', default=6., type=int,
+                        help="number of heads in grouping layer")
+    parser.add_argument('--d_grouping_head', default=48., type=int,
+                        help="The dimension for each head in grouping layer")
 
     # Transformer.
     parser.add_argument('--enc_layers', default=6, type=int,
