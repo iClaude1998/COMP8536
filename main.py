@@ -69,7 +69,7 @@ def get_args_parser():
     
     # Modal Fusion Blocks
     parser.add_argument('--have_fusion_block', action='store_true')
-    parser.add_argument('--word_representation_path', default='./HOI_verb_GloveEmbbeding/HOI_Verb_wordVectors.npy')
+    parser.add_argument('--word_representation_path', default='./HOI_verb_GloveEmbbeding/finetuned_HOI_Verb_wordVectors_normed.npy')
     parser.add_argument('--fuse_dim', default=512, type=int,
                         help="The fused dimension for attentional fusion")
     parser.add_argument('--gumbel', default=False, type=bool,
