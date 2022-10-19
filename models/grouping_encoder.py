@@ -2,7 +2,7 @@
 Author: Yunxiang Liu u7191378@anu.edu.au
 Date: 2022-10-15 16:18:37
 LastEditors: Yunxiang Liu u7191378@anu.edu.au
-LastEditTime: 2022-10-19 16:45:30
+LastEditTime: 2022-10-19 17:31:44
 FilePath: \HoiTransformer\models\grouping_encoder.py
 Description: 
 '''
@@ -44,13 +44,13 @@ class Region_Proposal_decoder(nn.Module):
     def forward(self, x, queries, mask, position_embed):
         x = x + position_embed
         out = self.layers[0](x, queries[0], mask)
-        output_list = []
+        output_list = [out]
         for i, layer in enumerate(self.layers[1:]):
             out = layer(out, queries[i+1])
             output_list.append(out)
         final_out =  self.out_encoder(out, None)
         output_list.append(final_out)
-        return torch.cat(output_list, dim=1)
+        return output_list
     
        
             

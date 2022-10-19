@@ -225,7 +225,7 @@ class HoiTR_II(nn.Module):
         self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.GC_block = GC_block
-        self.aux_loss = False
+        self.aux_loss = aux_loss
 
         self.human_cls_embed = nn.Linear(hidden_dim, num_humans + 1)
         self.human_box_embed = MLP(hidden_dim, hidden_dim, 4, 3)
@@ -278,26 +278,99 @@ class HoiTR_II(nn.Module):
 
         # hs = self.transformer(src, mask, queries, pos[-1])[0]
 
-        human_outputs_class = self.human_cls_embed(hs)
-        human_outputs_coord = self.human_box_embed(hs).sigmoid()
-        object_outputs_class = self.object_cls_embed(hs)
-        object_outputs_coord = self.object_box_embed(hs).sigmoid()
-        action_outputs_class = self.action_cls_embed(hs)
+        # human_outputs_class = self.human_cls_embed(hs)
+        human_outputs_class = list(map(self.human_cls_embed, hs))
+        # human_outputs_coord = self.human_box_embed(hs).sigmoid()
+        human_outputs_coord = list(map(lambda h: self.human_box_embed(h).sigmoid(), hs))
+        # object_outputs_class = self.object_cls_embed(hs)
+        object_outputs_class = list(map(self.object_cls_embed, hs))
+        # object_outputs_coord = self.object_box_embed(hs).sigmoid()
+        object_outputs_coord = list(map(lambda h: self.object_box_embed(h).sigmoid(), hs))
+        # action_outputs_class = self.action_cls_embed(hs)
+        action_outputs_class = list(map(self.action_cls_embed, hs))
 
         out = {
-            'human_pred_logits': human_outputs_class,
-            'human_pred_boxes': human_outputs_coord,
-            'object_pred_logits': object_outputs_class,
-            'object_pred_boxes': object_outputs_coord,
-            'action_pred_logits': action_outputs_class,
+            'human_pred_logits': human_outputs_class[-1],
+            'human_pred_boxes': human_outputs_coord[-1],
+            'object_pred_logits': object_outputs_class[-1],
+            'object_pred_boxes': object_outputs_coord[-1],
+            'action_pred_logits': action_outputs_class[-1],
         }
         
         if self.word_fusion_block is not None:
-            action_represent = self.action_word_embed(hs)
-            out['action_pred_embedding'] = action_represent
+            # action_represent = self.action_word_embed(hs)
+            action_represent = list(map(self.action_word_embed, hs))
+            out['action_pred_embedding'] = action_represent[-1]
         else:
             action_represent = None
+            
+        if self.aux_loss:
+            out['aux_outputs'] = self._set_aux_loss(
+                human_outputs_class,
+                human_outputs_coord,
+                object_outputs_class,
+                object_outputs_coord,
+                action_outputs_class,
+                action_represent,
+            )
+
         return out
+
+    @torch.jit.unused
+    def _set_aux_loss(self,
+                      human_outputs_class,
+                      human_outputs_coord,
+                      object_outputs_class,
+                      object_outputs_coord,
+                      action_outputs_class,
+                      action_outputs_pre
+                      ):
+        # this is a workaround to make torchscript happy, as torchscript
+        # doesn't support dictionary with non-homogeneous values, such
+        # as a dict having both a Tensor and a list.
+        if action_outputs_pre is None:
+            return [{
+                'human_pred_logits': a,
+                'human_pred_boxes': b,
+                'object_pred_logits': c,
+                'object_pred_boxes': d,
+                'action_pred_logits': e,
+            } for
+                a,
+                b,
+                c,
+                d,
+                e,
+                in zip(
+                human_outputs_class[:-1],
+                human_outputs_coord[:-1],
+                object_outputs_class[:-1],
+                object_outputs_coord[:-1],
+                action_outputs_class[:-1],
+            )]
+        else:
+            return [{
+                'human_pred_logits': a,
+                'human_pred_boxes': b,
+                'object_pred_logits': c,
+                'object_pred_boxes': d,
+                'action_pred_logits': e,
+                'action_pred_embedding': f
+            } for
+                a,
+                b,
+                c,
+                d,
+                e,
+                f
+                in zip(
+                human_outputs_class[:-1],
+                human_outputs_coord[:-1],
+                object_outputs_class[:-1],
+                object_outputs_coord[:-1],
+                action_outputs_class[:-1],
+                action_outputs_pre[:-1]
+            )]
 
 class SetCriterion(nn.Module):
     """ This class computes the loss for DETR.
@@ -709,7 +782,7 @@ def build_II(args):
         num_classes=num_classes,
         num_actions=num_actions,
         num_queries=args.num_queries,
-        aux_loss=False
+        aux_loss=args.aux_loss
     )
 
     matcher = build_hoi_matcher(args)
