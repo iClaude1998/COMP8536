@@ -23,7 +23,7 @@ from .hoi_matcher import build_matcher as build_hoi_matcher
 from .transformer import build_transformer, build_Transformer_encoders, build_Transformer_decoders
 from .GC_block import build_GC_block
 from .modal_fusion_block import build_fusion_block
-from .grouping_encoder import build_RPE
+from .grouping_encoder import build_RPE, build_group_decoder
 
 num_humans = 2
 
@@ -198,6 +198,106 @@ class HoiTR(nn.Module):
                 action_outputs_pre[:-1]
             )]
 
+
+
+class HoiTR_II(nn.Module):
+    """ This is the DETR module that performs object detection """
+    def __init__(self, backbone, T_encoders, decoders, GC_block ,word_fusion_block, num_classes, num_actions, num_queries, aux_loss=False):
+        """ Initializes the model.
+        Parameters:
+            backbone: torch module of the backbone to be used. See backbone.py
+            transformer: torch module of the transformer architecture. See transformer.py
+            num_classes: number of object classes
+            num_queries: number of object queries, ie detection slot. This is the maximal number of objects
+                         DETR can detect in a single image. For COCO, we recommend 100 queries.
+            aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
+        """
+        super().__init__()
+        self.num_queries = num_queries
+        self.T_encoders = T_encoders
+        self.decoders = decoders
+        # self.transformer = transformer
+        hidden_dim = self.decoders.dim
+        num_queries = self.decoders.num_queries
+        self.embeddings = nn.ModuleList([nn.Embedding(nq, hidden_dim) for nq in num_queries])
+        # self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.word_fusion_block = word_fusion_block
+        self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
+        self.backbone = backbone
+        self.GC_block = GC_block
+        self.aux_loss = False
+
+        self.human_cls_embed = nn.Linear(hidden_dim, num_humans + 1)
+        self.human_box_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        self.object_cls_embed = nn.Linear(hidden_dim, num_classes + 1)
+        self.object_box_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        self.action_cls_embed = nn.Linear(hidden_dim, num_actions + 1)
+        if self.word_fusion_block is not None: # hidden_dim, self.word_fusion_block.glove_word_dim
+            self.action_word_embed = Fusion_head(hidden_dim, self.word_fusion_block.emb_dim, self.word_fusion_block.word_dim)
+        
+
+    def forward(self, samples: NestedTensor):
+        """ The forward expects a NestedTensor, which consists of:
+               - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
+               - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
+
+            It returns a dict with the following elements:
+               - "pred_logits": the classification logits (including no-object) for all queries.
+                                Shape= [batch_size x num_queries x (num_classes + 1)]
+               - "pred_boxes": The normalized boxes coordinates for all queries, represented as
+                               (center_x, center_y, height, width). These values are normalized in [0, 1],
+                               relative to the size of each individual image (disregarding possible padding).
+                               See PostProcess for information on how to retrieve the unnormalized bounding box.
+               - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
+                                dictionnaries containing the two above keys for each decoder layer.
+        """
+        if isinstance(samples, (list, torch.Tensor)):
+            samples = nested_tensor_from_tensor_list(samples)
+        features, pos = self.backbone(samples)
+
+        src, mask = features[-1].decompose()
+        assert mask is not None
+
+        src = self.input_proj(src)
+        bs = src.size(0)
+        if self.GC_block is not None:
+            src = self.GC_block(src, mask)
+        
+        pos_embed = pos[-1].flatten(2).permute(2, 0, 1)
+        mask = mask.flatten(1)
+        memory = self.T_encoders(src, mask, pos_embed)
+
+        queries = [e.weight for e in self.embeddings]
+        queries = [q.expand(bs, -1, -1) for q in queries]
+            
+        if self.word_fusion_block is not None:
+            queries = list(map(lambda q: self.word_fusion_block(q), queries))
+        hs = self.decoders(memory.transpose(0, 1), queries, mask, pos_embed.transpose(0, 1))
+        # print(hs.size())
+        # raise NotImplementedError
+
+        # hs = self.transformer(src, mask, queries, pos[-1])[0]
+
+        human_outputs_class = self.human_cls_embed(hs)
+        human_outputs_coord = self.human_box_embed(hs).sigmoid()
+        object_outputs_class = self.object_cls_embed(hs)
+        object_outputs_coord = self.object_box_embed(hs).sigmoid()
+        action_outputs_class = self.action_cls_embed(hs)
+
+        out = {
+            'human_pred_logits': human_outputs_class,
+            'human_pred_boxes': human_outputs_coord,
+            'object_pred_logits': object_outputs_class,
+            'object_pred_boxes': object_outputs_coord,
+            'action_pred_logits': action_outputs_class,
+        }
+        
+        if self.word_fusion_block is not None:
+            action_represent = self.action_word_embed(hs)
+            out['action_pred_embedding'] = action_represent
+        else:
+            action_represent = None
+        return out
 
 class SetCriterion(nn.Module):
     """ This class computes the loss for DETR.
@@ -457,6 +557,8 @@ class SetCriterion(nn.Module):
         return losses
 
 
+
+
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
 
@@ -548,6 +650,73 @@ def build(args):
         for i in range(args.dec_layers - 1):
             aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
+
+    losses = ['labels', 'boxes', 'cardinality']
+    if word_fusion_block is not None:
+        losses.append('language')
+
+    criterion = SetCriterion(num_classes=num_classes, num_actions=num_actions, matcher=matcher,
+                             weight_dict=weight_dict, eos_coef=args.eos_coef, losses=losses, 
+                             language_temperature=args.lang_T, device=device, word_embedding_path=args.word_representation_path)
+    criterion.to(device)
+
+    return model, criterion
+
+
+
+def build_II(args):
+    assert args.dataset_file in ['hico', 'vcoco', 'hoia'], args.dataset_file
+    if args.dataset_file in ['hico']:
+        num_classes = 91
+        num_actions = 118
+    elif args.dataset_file in ['vcoco']:
+        num_classes = 91
+        num_actions = 30
+    else:
+        num_classes = 12
+        num_actions = 11
+
+    device = torch.device(args.device)
+
+    if args.backbone == 'swin':
+        from .backbone_swin import build_backbone_swin
+        backbone = build_backbone_swin(args)
+    else:
+        backbone = build_backbone(args)
+
+    # transformer = build_transformer(args)
+    transformer_encoders = build_Transformer_encoders(args)
+    decoder = build_group_decoder(args)
+    
+    if args.have_GC_block:
+        in_channels = transformer_encoders.d_model
+        gc_block = build_GC_block(in_channels, args)
+    else:
+        gc_block = None
+        
+    if args.have_fusion_block:
+        word_fusion_block = build_fusion_block(args)
+    else:
+        word_fusion_block=None
+        
+
+    model = HoiTR_II(
+        backbone,
+        transformer_encoders,
+        decoder,
+        gc_block,
+        word_fusion_block,
+        num_classes=num_classes,
+        num_actions=num_actions,
+        num_queries=args.num_queries,
+        aux_loss=False
+    )
+
+    matcher = build_hoi_matcher(args)
+
+    weight_dict = dict(loss_ce=1, loss_bbox=args.bbox_loss_coef, loss_giou=args.giou_loss_coef)
+    if word_fusion_block is not None:
+        weight_dict['loss_language'] = args.loss_language_coef
 
     losses = ['labels', 'boxes', 'cardinality']
     if word_fusion_block is not None:

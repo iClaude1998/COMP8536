@@ -20,7 +20,7 @@ from datasets.hoia import hoi_interaction_names as hoi_interaction_names_hoia
 from datasets.hoia import coco_instance_ID_to_name as coco_instance_ID_to_name_hoia
 from datasets.vcoco import hoi_interaction_names as hoi_interaction_names_vcoco
 from datasets.vcoco import coco_instance_ID_to_name as coco_instance_ID_to_name_vcoco
-from models import build_model
+from models import build_model, build_model_II
 import util.misc as utils
 
 
@@ -83,9 +83,9 @@ def get_args_parser():
                         help="the drop out score for transformer encoder")
     parser.add_argument('--e_dropout', default=0., type=float,
                         help="the drop out score for transformer encoder")
-    parser.add_argument('--grouping_heads', default=6., type=int,
+    parser.add_argument('--grouping_heads', default=6, type=int,
                         help="number of heads in grouping layer")
-    parser.add_argument('--d_grouping_head', default=48., type=int,
+    parser.add_argument('--d_grouping_head', default=48, type=int,
                         help="The dimension for each head in grouping layer")
 
     # Transformer.
@@ -208,7 +208,8 @@ def inference_on_data(args, model_path, image_set, max_to_viz=10, test_scale=-1)
     print('epoch:', epoch)
 
     device = torch.device(args.device)
-    model, criterion = build_model(args)
+    # model, criterion = build_model(args)
+    model, criterion = build_model_II(args)
     model.load_state_dict(checkpoint['model'])
     model.to(device)
     model.eval()

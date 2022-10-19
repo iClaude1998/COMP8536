@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 import util.misc as utils
 from datasets import build_dataset
 from engine import train_one_epoch
-from models import build_model
+from models import build_model, build_model_II
 
 
 def create_log_dir(checkpoint='checkpoint', log_path='/data/LOG/train_log'):
@@ -184,7 +184,8 @@ def main(args):
     np.random.seed(seed)
     random.seed(seed)
 
-    model, criterion = build_model(args)
+    # model, criterion = build_model(args)
+    model, criterion = build_model_II(args)
     model.to(device)
 
     model_without_ddp = model

@@ -2,7 +2,7 @@
 Author: Yunxiang Liu u7191378@anu.edu.au
 Date: 2022-10-15 16:18:37
 LastEditors: Yunxiang Liu u7191378@anu.edu.au
-LastEditTime: 2022-10-17 00:36:38
+LastEditTime: 2022-10-19 16:45:30
 FilePath: \HoiTransformer\models\grouping_encoder.py
 Description: 
 '''
@@ -28,8 +28,32 @@ class Region_Proposal_Encoder(nn.Module):
         for layer in self.layers[1:]:
             out = layer(out)
         return self.out_encoder(out, None)
-            
     
+
+class Region_Proposal_decoder(nn.Module):
+    def __init__(self, num_queries, dim, heads, dim_head, mlp_dim, e_attn_dropout, e_dropout,
+                 grouping_heads, d_grouping_head, mlp_ratio=(0.5, 4.0)):
+        super().__init__()
+        self.num_queries = num_queries
+        self.dim = dim
+        self.layers = nn.ModuleList(list(map(lambda q: group_encoder_II(2, q, dim, heads, dim_head, mlp_dim, e_attn_dropout, e_dropout,
+                 grouping_heads, d_grouping_head, mlp_ratio), num_queries[:-1])))
+        self.layers.append(group_encoder_II(1, num_queries[-1], dim, heads, dim_head, mlp_dim, e_attn_dropout, e_dropout, grouping_heads, d_grouping_head, mlp_ratio))
+        self.out_encoder = Transformer_Encoder(dim, heads, dim_head, mlp_dim, e_attn_dropout, e_dropout)
+        
+    def forward(self, x, queries, mask, position_embed):
+        x = x + position_embed
+        out = self.layers[0](x, queries[0], mask)
+        output_list = []
+        for i, layer in enumerate(self.layers[1:]):
+            out = layer(out, queries[i+1])
+            output_list.append(out)
+        final_out =  self.out_encoder(out, None)
+        output_list.append(final_out)
+        return torch.cat(output_list, dim=1)
+    
+       
+            
 class group_encoder(nn.Module):
     """A Transformer encoder followed by a grouping block
 
@@ -70,6 +94,52 @@ class group_encoder(nn.Module):
         q_mask = mask.new_ones((batch, self.num_queries, 1))
         new_mask = q_mask * mask.unsqueeze(1)
         return new_mask.unsqueeze(1)
+ 
+ 
+    
+class group_encoder_II(nn.Module):
+    """A Transformer encoder followed by a grouping block
+
+    Args:
+        nn (_type_): _description_
+    """
+    
+    def __init__(self, depth ,num_queries, dim, heads, dim_head, mlp_dim, e_attn_dropout, e_dropout,
+                 grouping_heads, d_grouping_head, mlp_ratio=(0.5, 4.0)):
+        super().__init__()
+        self.num_queries = num_queries
+        # self.layer = []
+        self.depth = depth
+        self.layer = nn.ModuleList([Transformer_Encoder(dim, heads, dim_head, mlp_dim, e_attn_dropout, e_dropout) for _ in range(depth)])
+        self.group_block = GroupingBlock(dim, grouping_heads, d_grouping_head, self.num_queries, mlp_ratio)
+    
+    def forward(self, x, queries, mask=None):
+        batch, num, _ = x.size()
+        if mask is not None:
+            encoding_mask = self.generate_encoder_mask(mask)
+            decoding_mask = self.generate_decoder_mask(mask)
+        else:
+            encoding_mask = None
+            decoding_mask = None
+        x_queries = torch.cat([x, queries], dim=1)
+        for i in range(self.depth):
+            encoded_x_queries = self.layer[i](x_queries, encoding_mask)
+        # x, queries = encoded_x_queries[:, :num, :], encoded_x_queries[:, num:, :]
+        return self.group_block(encoded_x_queries[:, :num, :], encoded_x_queries[:, num:, :], decoding_mask)
+          
+    def generate_encoder_mask(self, mask):
+        batch = mask.size(0)
+        new_mask = mask.new_ones((batch, self.num_queries))
+        mask = torch.cat([mask, new_mask], dim=1)
+        return (mask[:, :, None] * mask[:, None, :]).unsqueeze(1)
+    
+    def generate_decoder_mask(self, mask):
+        batch = mask.size(0)
+        q_mask = mask.new_ones((batch, self.num_queries, 1))
+        new_mask = q_mask * mask.unsqueeze(1)
+        return new_mask.unsqueeze(1)
+    
+    
     
 class Transformer_Encoder(nn.Module):
     r"""
@@ -343,3 +413,19 @@ def build_RPE(args):
                                    args.grouping_heads, 
                                    args.d_grouping_head, 
                                    mlp_ratio=mlp_ratio)
+    
+    
+def build_group_decoder(args):
+    num_queries = list(map(int, args.n_queries))
+    mlp_ratio = list(map(float, args.mlp_ratio))
+    return Region_Proposal_decoder(num_queries, 
+                                   args.hidden_dim, 
+                                   args.e_num_heads, 
+                                   args.e_dim_head, 
+                                   args.e_mlp_dim, 
+                                   args.e_attn_dropout, 
+                                   args.e_dropout, 
+                                   args.grouping_heads, 
+                                   args.d_grouping_head, 
+                                   mlp_ratio=mlp_ratio)
+    
