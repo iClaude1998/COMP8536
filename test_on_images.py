@@ -1,7 +1,7 @@
 # ------------------------------------------------------------------------
 # Licensed under the Apache License, Version 2.0 (the "License")
 # ------------------------------------------------------------------------
-
+import time
 import argparse
 import random
 import os
@@ -18,7 +18,7 @@ from datasets.hoia import hoi_interaction_names as hoi_interaction_names_hoia
 from datasets.hoia import coco_instance_ID_to_name as coco_instance_ID_to_name_hoia
 from datasets.vcoco import hoi_interaction_names as hoi_interaction_names_vcoco
 from datasets.vcoco import coco_instance_ID_to_name as coco_instance_ID_to_name_vcoco
-from models import build_model
+from models import build_model, build_model_II
 
 
 def get_args_parser():
@@ -32,10 +32,61 @@ def get_args_parser():
     parser.add_argument('--clip_max_norm', default=0.1, type=float, help='gradient clipping max norm')
 
     # Backbone.
-    parser.add_argument('--backbone', choices=['resnet50', 'resnet101'], required=True,
+    parser.add_argument('--backbone', choices=['resnet50', 'resnet101', 'swin', 'resnet50-hico'], required=True,
                         help="Name of the convolutional backbone to use")
-    parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned'),
+    parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned', 'sine-2d'),
                         help="Type of positional embedding to use on top of the image features")
+    parser.add_argument('--freeze_backbone', action='store_true',
+                        help="freeze the backbones") 
+    
+    
+       # GC_Block
+    parser.add_argument('--have_GC_block', action='store_true')
+    parser.add_argument('--ratio', default=1, type=int,
+                        help="The ratio of GC block")
+    parser.add_argument('--headers', default=1, type=int,
+                        help="Number of heads in GC block")
+    parser.add_argument('--pooling_type', default='att', type=str,
+                        help="Pooling type of GC_block")
+    parser.add_argument('--atten_scale', default=False, type=bool,
+                        help="whether scaling the attention score")
+    parser.add_argument('--fusion_type', default='channel_add', type=str,
+                        help="the way of fusing attention scores on feature maps")
+    
+    # Modal Fusion Blocks
+    parser.add_argument('--have_fusion_block', action='store_true')
+    parser.add_argument('--word_representation_path', default='./HOI_verb_GloveEmbbeding/finetuned_HOI_Verb_wordVectors_normed.npy')
+    parser.add_argument('--fuse_dim', default=512, type=int,
+                        help="The fused dimension for attentional fusion")
+    parser.add_argument('--gumbel', default=False, type=bool,
+                        help="Whether implement gumbel attention")
+    parser.add_argument('--tau', default=1, type=float,
+                        help="the tau of gumbel attention, activate when --gumbel is true")
+    parser.add_argument('--fusion_heads', default=8, type=int,
+                        help="The number of heads for model fusion")
+    parser.add_argument('--fusion_drop_out', default=0.1, type=float,
+                        help="the drop out score for attention fusion")
+    
+    # RPE
+    parser.add_argument('--have_RPE', action='store_true')
+    parser.add_argument('--n_queries', type=list, default=[256, 100], 
+                        help="The number of queries for each RPE layer")
+    parser.add_argument('--mlp_ratio', type=list, default=[0.5, 4.],
+                        help="The hidden dimension ratio on two feedforward layers in grouping blocks")
+    parser.add_argument('--e_num_heads', default=6, type=int,
+                        help="The number of heads in transformer encoder")
+    parser.add_argument('--e_dim_head', default=48, type=int,
+                        help="The dimension for each head in transformer encoder")
+    parser.add_argument('--e_mlp_dim', default=2048, type=int,
+                        help="The hidden dimension in transformer encoder")
+    parser.add_argument('--e_attn_dropout', default=0., type=float,
+                        help="the drop out score for transformer encoder")
+    parser.add_argument('--e_dropout', default=0., type=float,
+                        help="the drop out score for transformer encoder")
+    parser.add_argument('--grouping_heads', default=6, type=int,
+                        help="number of heads in grouping layer")
+    parser.add_argument('--d_grouping_head', default=48, type=int,
+                        help="The dimension for each head in grouping layer")
 
     # Transformer.
     parser.add_argument('--enc_layers', default=6, type=int,
@@ -54,7 +105,7 @@ def get_args_parser():
                         help="Number of query slots")
     parser.add_argument('--pre_norm', action='store_true')
 
-    # Loss.
+   # Loss.
     parser.add_argument('--no_aux_loss', dest='aux_loss', action='store_false',
                         help="Disables auxiliary decoding losses (loss at each layer)")
     # Matcher.
@@ -64,13 +115,19 @@ def get_args_parser():
                         help="L1 box coefficient in the matching cost")
     parser.add_argument('--set_cost_giou', default=2, type=float,
                         help="giou box coefficient in the matching cost")
+    parser.add_argument('--set_cost_word', default=0.6, type=float,
+                        help="representation similarity coefficient in the matching cost, activate auto when implement word fusion block")
 
     # Loss coefficients.
     parser.add_argument('--dice_loss_coef', default=1, type=float)
     parser.add_argument('--bbox_loss_coef', default=5, type=float)
     parser.add_argument('--giou_loss_coef', default=2, type=float)
+    parser.add_argument('--loss_language_coef', default=1, type=float)
     parser.add_argument('--eos_coef', default=0.02, type=float,
                         help="Relative classification weight of the no-object class")
+    parser.add_argument('--lang_T', default=.5, type=float,
+                        help="The temperature of contrast loss for language fusion loss, activate auto when implement word fusion block")
+
 
     # Dataset parameters.
     parser.add_argument('--dataset_file', choices=['hico', 'vcoco', 'hoia'], required=True)
@@ -149,6 +206,7 @@ def load_model(model_path, args):
     print('epoch:', checkpoint['epoch'])
     device = torch.device(args.device)
     model, criterion = build_model(args)
+    # model, criterion = build_model_II(args)
     model.load_state_dict(checkpoint['model'])
     model.to(device)
     model.eval()
@@ -223,7 +281,9 @@ def predict_on_one_image(args, model, device, img_tensor, img_size, hoi_th, huma
 
     samples = torch.unsqueeze(img_tensor, dim=0)
     samples = samples.to(device)
+    tmp = time.perf_counter()
     outputs = model(samples)
+    tmp_ = time.perf_counter()
     action_pred_logits = outputs['action_pred_logits'][0]
     object_pred_logits = outputs['object_pred_logits'][0]
     object_pred_boxes = outputs['object_pred_boxes'][0]
@@ -279,7 +339,7 @@ def predict_on_one_image(args, model, device, img_tensor, img_size, hoi_th, huma
         hoi_list.append(pp)
 
     hoi_list = triplet_nms(hoi_list)
-    return hoi_list
+    return hoi_list, tmp_ - tmp
 
 
 def viz_hoi_result(img, hoi_list):
@@ -311,7 +371,7 @@ def run_on_images(args, img_path_list):
     log_dir = os.path.join(args.log_dir, 'log')
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
-
+    total_time = 0
     for idx_img, img_path in enumerate(tqdm(img_path_list)):
         # read image data
         img, img_size = read_cv2_image(img_path=img_path)
@@ -319,12 +379,15 @@ def run_on_images(args, img_path_list):
         # inference on one image
         img_rescale = resize_ensure_shortest_edge(img=img, size=672, max_size=1333)
         img_tensor = prepare_cv2_image4nn(img=img_rescale)
-        hoi_list = predict_on_one_image(
+
+        hoi_list, time_spend = predict_on_one_image(
             args, model, device, img_tensor, img_size, hoi_th=0.6, human_th=0.6, object_th=0.6, top_k=25,
-        )
+            )
+        total_time += time_spend
         img_name = 'img_%s_%06d.jpg' % (os.path.basename(img_path), idx_img)
         img_result = viz_hoi_result(img=img, hoi_list=hoi_list)
         cv2.imwrite(os.path.join(log_dir, img_name), img_result)
+    print("time pre image: ", total_time / idx_img)
 
 
 def main():
@@ -339,7 +402,20 @@ def main():
     if args.img_sheet is None:
         img_path_list = [
             './data/hico/images/test2015/HICO_test2015_00000001.jpg',
-            './data/hoia/images/test/test_000000.png',
+            './data/hico/images/test2015/HICO_test2015_00000024.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000041.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000072.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000012.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000138.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000160.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000054.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000516.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000517.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000490.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000318.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000418.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000546.jpg',
+            './data/hico/images/test2015/HICO_test2015_00000578.jpg',
         ]
     else:
         img_path_list = [l.strip() for l in open(args.img_sheet, 'r').readlines()]

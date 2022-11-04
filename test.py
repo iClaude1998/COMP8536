@@ -11,6 +11,7 @@ from tqdm import tqdm
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from datasets import build_dataset
@@ -206,7 +207,7 @@ def inference_on_data(args, model_path, image_set, max_to_viz=10, test_scale=-1)
     checkpoint = torch.load(model_path, map_location='cpu')
     epoch = checkpoint['epoch']
     print('epoch:', epoch)
-
+    embeddings = torch.from_numpy(np.load(args.word_representation_path)).to(args.device)
     device = torch.device(args.device)
     # model, criterion = build_model(args)
     model, criterion = build_model_II(args)
@@ -247,7 +248,7 @@ def inference_on_data(args, model_path, image_set, max_to_viz=10, test_scale=-1)
         object_pred_boxes = outputs['object_pred_boxes']
         human_pred_logits = outputs['human_pred_logits']
         human_pred_boxes = outputs['human_pred_boxes']
-        result_list.append(dict(
+        res = dict(
             id_list=id_list,
             org_sizes=org_sizes,
             action_pred_logits=action_pred_logits.detach().cpu(),
@@ -255,7 +256,13 @@ def inference_on_data(args, model_path, image_set, max_to_viz=10, test_scale=-1)
             object_pred_boxes=object_pred_boxes.detach().cpu(),
             human_pred_logits=human_pred_logits.detach().cpu(),
             human_pred_boxes=human_pred_boxes.detach().cpu(),
-        ))
+        )
+        if outputs.get('action_pred_embedding', None) is not None:
+            action_pred_embeddings = outputs['action_pred_embedding']
+            simlarity_score = F.cosine_similarity(action_pred_embeddings.unsqueeze(2), embeddings[None, :, :].unsqueeze(0), dim=-1)
+            # print(action_pred_logits.size())
+            res['action_siml_scores'] = simlarity_score.detach().cpu()
+        result_list.append(res)
         p_bar.update()
 
     with open(file_path, 'wb') as f:
@@ -300,6 +307,10 @@ def parse_model_result(args, result_path, hoi_th=0.9, human_th=0.5, object_th=0.
         object_pred_boxes = outputs['object_pred_boxes']
         human_pred_logits = outputs['human_pred_logits']
         human_pred_boxes = outputs['human_pred_boxes']
+        if outputs.get('action_siml_scores', None) is not None:
+            human_pred_sim = outputs['human_pred_boxes']
+        else:
+            human_pred_sim = None
         assert len(action_pred_logits) == len(img_id_list)
 
         for idx_img in range(len(action_pred_logits)):
@@ -311,6 +322,10 @@ def parse_model_result(args, result_path, hoi_th=0.9, human_th=0.5, object_th=0.
             object_cls = torch.nn.Softmax(dim=1)(object_pred_logits[idx_img]).detach().cpu().numpy()[:, :-1]
             human_box = human_pred_boxes[idx_img].detach().cpu().numpy()
             object_box = object_pred_boxes[idx_img].detach().cpu().numpy()
+            if human_pred_sim is not None:
+                pred_sim = human_pred_sim[idx_img].detach().cpu().numpy()
+            else:
+                pred_sim = None
 
             keep = (act_cls.argmax(axis=1) != num_actions)
             keep = keep * (human_cls.argmax(axis=1) != 2)
@@ -318,6 +333,9 @@ def parse_model_result(args, result_path, hoi_th=0.9, human_th=0.5, object_th=0.
             keep = keep * (act_cls > hoi_th).any(axis=1)
             keep = keep * (human_cls > human_th).any(axis=1)
             keep = keep * (object_cls > object_th).any(axis=1)
+            if pred_sim is not None:
+                keep = keep * (pred_sim > 0).any(axis=1)
+                 
 
             human_idx_max_list = human_cls[keep].argmax(axis=1)
             human_val_max_list = human_cls[keep].max(axis=1)
