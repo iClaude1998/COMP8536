@@ -22,7 +22,7 @@ Although the baseline model comes from the [HOiTrans](https://github.com/bbepoch
 
 ## structure-II ( Grouping-based Decoder)
 
-<img src="E:\learn_ANU\COMP8536\project\HoiTransformer\data\decoder.png" style="zoom:30%;" />
+<img src="data\decoder.png" style="zoom:30%;" />
 
 
 
