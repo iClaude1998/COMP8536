@@ -1,5 +1,7 @@
 # Group-HOI Detector with Multi-modal Supervision
 
+**Authors:** Yunxiang Liu (u7191378) Shiqiao Zhou (u7155524) Kai Xi (u6458119)
+
 The  [source codes](https://github.com/bbepoch/HoiTransformer) of baseline comes from:  [End-to-End Human Object Interaction Detection with HOI Transformer](https://arxiv.org/abs/2103.04503) published by Zou.etc, thanks for their contribution.
 
 
