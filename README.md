@@ -1,7 +1,5 @@
 # Group-HOI Detector with Multi-modal Supervision
 
-**Authors:** Yunxiang Liu (u7191378) Shiqiao Zhou (u7155524) Kai Xi (u6458119)
-
 The  [source codes](https://github.com/bbepoch/HoiTransformer) of baseline comes from:  [End-to-End Human Object Interaction Detection with HOI Transformer](https://arxiv.org/abs/2103.04503) published by Zou.etc, thanks for their contribution.
 
 
@@ -24,7 +22,7 @@ Although the baseline model comes from the [HOiTrans](https://github.com/bbepoch
 
 ## structure-II ( Grouping-based Decoder)
 
-<img src="data\decoder.png" style="zoom:30%;" />
+<img src="E:\learn_ANU\COMP8536\project\HoiTransformer\data\decoder.png" style="zoom:30%;" />
 
 
 
@@ -42,9 +40,9 @@ You could download the checkpoints of structue II via [Link](https://drive.googl
 
 ## Performance
 
-|Model|HICO-DET (Full/Rare/NonRare)|HOI-A|
-|---|---|---|
-|Res50|28.92/19.83/31.64|73.23|
+|Model|HICO-DET (Full/Rare/NonRare)|
+|---|---|
+|Res50|26.44/18.24/28.83|
 
 ## Reproduction
 
